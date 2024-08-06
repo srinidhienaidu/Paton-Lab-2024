@@ -24,10 +24,10 @@ NUM_COND = 8
 conditions = []
 stim_dep = []
 dec_dep = []
-TIME_PTS = 200 
+TIME_PTS = 10 
 NUM_STIM = 4
 NUM_DEC = 2
-NUM_TIME = 100
+NUM_TIME = 5
 np.random.seed(42)
 base_rates = np.random.rand(NUM_NEURONS, NUM_COND) * 10  
 
@@ -118,8 +118,6 @@ for trial in range(NUM_TRIALS):
 # plt.show()
 
 # %%
-
-# %%
 ## Marginalization Procedure ####################################################################################################################################################
 #################################################################################################################################################################################
 
@@ -139,13 +137,12 @@ for cell in range(NUM_NEURONS):
     x_d = np.zeros((NUM_DEC))
 
     x_s_pad = np.zeros((NUM_TRIALS, 1))
+    x_ts = np.zeros((NUM_STIM, NUM_TIME)) 
     x_ts_pad = np.zeros((NUM_TRIALS, NUM_TIME))
 
     x_d_pad = np.zeros((NUM_TRIALS, 1))
-    x_td_pad = np.zeros((NUM_TRIALS, NUM_TIME))
-
-    x_ts = np.zeros((NUM_STIM, NUM_TIME)) 
     x_td = np.zeros((NUM_DEC, NUM_TIME))
+    x_td_pad = np.zeros((NUM_TRIALS, NUM_TIME))
 
     x_sd = np.zeros((NUM_STIM, NUM_DEC))
     x_sd_pad = np.zeros((NUM_TRIALS, NUM_TIME))
@@ -156,7 +153,6 @@ for cell in range(NUM_NEURONS):
         x_s_pad[stim_coord] = np.mean(x_tsdk[stim_coord] - x)
 
     for dec in range(NUM_DEC):
-
         dec_coor = np.where(np.array(dec_dep) == (dec + 1))[0]
         x_d[dec] = np.mean(x_tsdk[dec_coor] - x)
         x_d_pad[dec_coor] = np.mean(x_tsdk[dec_coor] - x)
@@ -173,8 +169,7 @@ for cell in range(NUM_NEURONS):
             intersect_coord = np.intersect1d(stim_coord, dec_coor)
             sd_val = np.mean(x_arr_subtracted[intersect_coord])
             x_sd[stim, dec] = sd_val
-
-            x_sd_pad[intersect_coord, :] = np.stack([sd_val] * NUM_TIME, axis = 0) 
+            x_sd_pad[intersect_coord] = np.stack([sd_val] * NUM_TIME, axis = 0) 
 
     for dec in range(NUM_DEC):
         dec_coor = np.where(np.array(dec_dep) == (dec + 1))[0]
@@ -185,10 +180,12 @@ for cell in range(NUM_NEURONS):
     sigma_tsdk = x_tsdk - np.mean(x_tsdk, axis = 0)
 
     x_bar_reshaped = np.full((NUM_STIM * NUM_DEC * NUM_TRIALS * NUM_TIME), x)
+    
     X_T[cell] = np.stack([x_t] * (NUM_TRIALS * NUM_STIM * NUM_DEC), axis = 0).flatten()
     X_TS[cell] = np.stack([x_ts_pad.flatten()] * (NUM_STIM * NUM_DEC), axis = 0).flatten()
     X_TD[cell] = np.stack([x_td_pad.flatten()] * (NUM_STIM * NUM_DEC), axis = 0).flatten()
     X_TSD[cell] = np.stack([x_tsd.flatten()] * (NUM_STIM * NUM_DEC), axis = 0).flatten()
+
     X_NOISE[cell] = np.stack([sigma_tsdk.flatten()] * (NUM_STIM * NUM_DEC), axis = 0).flatten()
 
     # reconstruction = x_reshaped + x_t_reshaped + x_ts_reshaped + x_td_reshaped + x_tsd_reshaped + sigma_reshaped
@@ -203,7 +200,7 @@ X = X_T + X_TS + X_TD + X_TSD + X_NOISE
 # First testing out for X_T
 NUM_EVAL = 1
 
-A_OLS = X_TS @ X.T @ np.linalg.inv(X @ X.T)
+A_OLS = X_NOISE @ X.T @ np.linalg.inv(X @ X.T)
 A_cov = np.cov(A_OLS @ X)
 evec, eval = np.linalg.eigh(A_cov)
 
@@ -217,26 +214,39 @@ A_q = U_q @ U_q.T @ A_OLS
 F = U_q
 D = U_q.T @ A_OLS
 # %%
-dec_1_spikes = np.mean(binned_spiking_data[:, dec_1], axis = 1)
+dec_1_spikes = np.mean(binned_spiking_data[:, dec_1], axis = 1).T
 mean_1 = np.mean(dec_1_spikes, axis = 0)
-
 demean_1 = dec_1_spikes - mean_1
-dec_2_spikes = np.mean(binned_spiking_data[:, dec_2], axis = 1)
 
-plt.scatter(dec_1_spikes[0], dec_1_spikes[1], label = 'Decision 1')
-plt.scatter(dec_2_spikes[0], dec_2_spikes[1], label = 'Decision 2')
+dec_2_spikes = np.mean(binned_spiking_data[:, dec_2], axis = 1).T
+mean_2 = np.mean(dec_2_spikes, axis = 0)
+demean_2 = dec_2_spikes - mean_2
+
+
+plt.scatter(dec_1_spikes[:, 0], dec_1_spikes[:, 1], label = 'Decision 1')
+plt.scatter(dec_2_spikes[:, 0], dec_2_spikes[:, 1], label = 'Decision 2')
 plt.xlabel("FR Neuron 1")
 plt.ylabel("FR Neuron 2")
 plt.legend()
 
-# %%
+projected_points_1 = np.zeros((NUM_TIME, 2))
+dim_1 = np.dot(demean_1, D.T)
+for idx, val in enumerate(dim_1):
+    projected_points_1[idx] = (((val * D) + mean_1))
+
+projected_points_2 = np.zeros((NUM_TIME, 2))
+dim_2 = np.dot(demean_2, D.T)
+for idx, val in enumerate(dim_2):
+    projected_points_2[idx] = (((val * D) + mean_2))
 
 # %%
-projected_points = np.zeros((NUM_TIME, NUM_NEURONS))
-dim_1 = np.dot(demean_1.T, D.T)
-for idx, val in enumerate(dim_1):
-    print(((val * D.T) + mean_1).shape)
-    # projected_points[idx] = 
+# time_point = :
+plt.scatter(projected_points_1[:, 0], projected_points_1[:, 1], label = 'Decision 1')
+plt.scatter(projected_points_2[:, 0], projected_points_2[:, 1], label = 'Decision 2')
+plt.xlabel("FR Neuron 1")
+plt.ylabel("FR Neuron 2")
+plt.legend()
+
 # %%
 
 # %%
