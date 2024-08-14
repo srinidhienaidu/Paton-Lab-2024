@@ -1,10 +1,31 @@
 # %%
+# !pip install --upgrade pip
+
+# %%
 import numpy as np
 from scipy.integrate import odeint
 import quantities as pq
 import neo 
 from elephant.spike_train_generation import inhomogeneous_poisson_process
+import matplotlib.pyplot as plt
+from elephant.gpfa import GPFA
+from mpl_toolkits.mplot3d import Axes3D
+
 # %%
+'''
+Your input consists of a set of trials (Y), which contains a list of spike trains (N neurons). The output is the projection
+(X) of the data in a space of prechosen dimensionality x < N
+
+The parameters (C, d, R), as well as the time scales and variances of the Gaussian process are estimated from the data using 
+the EM algorithm
+0. Bin the spike train data to get a sequence of N dimensional vectors of spike counts in respective time bins, and then choose 
+reduced dimensionality x_dim
+1. EM for fitting C, d, and R using all trials as the input --> gpfa_core.em
+2. Project the  single trials in the low dimensional space --> gpfa_core.exact_inference_with_ll()
+3. Orthonormalization of the matrix C for visualization purposes --> gpfa_core.orthonormalize()
+'''
+
+# Synthetic spike trains generated here
 def integrated_oscillator(dt, num_steps, x0=0, y0=1, angular_frequency=2*np.pi*1e-3):
     """
     Parameters
@@ -32,8 +53,7 @@ def integrated_oscillator(dt, num_steps, x0=0, y0=1, angular_frequency=2*np.pi*1
     y = -x0*np.sin(angular_frequency*t) + y0*np.cos(angular_frequency*t)
     return t, np.array((x, y))
 
-def integrated_lorenz(dt, num_steps, x0=0, y0=1, z0=1.05,
-                      sigma=10, rho=28, beta=2.667, tau=1e3):
+def integrated_lorenz(dt, num_steps, x0=0, y0=1, z0=1.05,sigma=10, rho=28, beta=2.667, tau=1e3):
     """
 
     Parameters
@@ -151,4 +171,299 @@ def generate_spiketrains(instantaneous_rates, num_trials, timestep):
         spiketrains.append(spiketrains_per_trial)
 
     return spiketrains
+# %%
+''' 
+Harmonic Oscillator Example 
+Deriving dynamics of a harmonic oscillator defined in a 2-d latent variable space. We want to extract these 
+2-dimensional latent dynamics from the spike train data! 
+To start, we generate a 50-dimensional synthetic spike train data based on a trajectory of a 
+2-dimensional harmonic oscillator
+'''
+
+# set parameters for the integration of the harmonic oscillator
+timestep = 1 * pq.ms
+trial_duration = 2 * pq.s
+num_steps = int((trial_duration.rescale('ms')/timestep).magnitude)
+
+# set parameters for spike train generation
+max_rate = 70 * pq.Hz
+np.random.seed(42)  # for visualization purposes, we want to get identical spike trains at any run
+
+# specify data size
+num_trials = 20
+num_spiketrains = 50
+
+# generate a low-dimensional trajectory
+times_oscillator, oscillator_trajectory_2dim = integrated_oscillator(
+    timestep.magnitude, num_steps=num_steps, x0=0, y0=1)
+times_oscillator = (times_oscillator*timestep.units).rescale('s') # type: ignore
+
+# random projection to high-dimensional space
+oscillator_trajectory_Ndim = random_projection(
+    oscillator_trajectory_2dim, embedding_dimension=num_spiketrains)
+
+# convert to instantaneous rate for Poisson process
+normed_traj = oscillator_trajectory_Ndim / oscillator_trajectory_Ndim.max()
+instantaneous_rates_oscillator = np.power(max_rate.magnitude, normed_traj)
+
+# generate spike trains
+spiketrains_oscillator = generate_spiketrains(
+    instantaneous_rates_oscillator, num_trials, timestep)
+
+f, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10)) # type: ignore
+
+ax1.set_title('2-dim Harmonic Oscillator')
+ax1.set_xlabel('time [s]')
+for i, y in enumerate(oscillator_trajectory_2dim):
+    ax1.plot(times_oscillator, y, label=f'dimension {i}')
+ax1.legend()
+
+ax2.set_title('Trajectory in 2-dim space')
+ax2.set_xlabel('Dim 1')
+ax2.set_ylabel('Dim 2')
+ax2.set_aspect(1)
+ax2.plot(oscillator_trajectory_2dim[0], oscillator_trajectory_2dim[1])
+
+ax3.set_title(f'Projection to {num_spiketrains}-dim space')
+ax3.set_xlabel('time [s]')
+y_offset = oscillator_trajectory_Ndim.std() * 3
+for i, y in enumerate(oscillator_trajectory_Ndim):
+    ax3.plot(times_oscillator, y + i*y_offset)
+
+trial_to_plot = 0
+ax4.set_title(f'Raster plot of trial {trial_to_plot}')
+ax4.set_xlabel('Time (s)')
+ax4.set_ylabel('Spike train index')
+for i, spiketrain in enumerate(spiketrains_oscillator[trial_to_plot]):
+    ax4.plot(spiketrain, np.ones_like(spiketrain) * i, ls='', marker='|')
+
+plt.tight_layout()
+plt.show()
+# %%
+'''
+Now, we want to extract the original latent dynamics from the generate spike train data, so we set our bin size 
+for 20 ms, and the dimensionality of the latent variables to 2. 
+'''
+# specify fitting parameters
+bin_size = 20 * pq.ms
+latent_dimensionality = 2
+
+gpfa_2dim = GPFA(bin_size=bin_size, x_dim=latent_dimensionality)
+# %%
+# Here, we are fitting a GPFA model to the given data, yielding estimates of the model parameters that best explain 
+# Our data stored in the params_estimate attribute
+gpfa_2dim.fit(spiketrains_oscillator[:num_trials//2])
+print(gpfa_2dim.params_estimated.keys())
+
+# %%
+# Here, we are transforming the spike trains into trajectories in the latent variable space 
+trajectories = gpfa_2dim.transform(spiketrains_oscillator[num_trials//2:])
+
+# %%
+# Here, we are visualizaing the extracted trajectories
+f, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5)) # type: ignore
+
+linewidth_single_trial = 0.5
+color_single_trial = 'C0'
+alpha_single_trial = 0.5
+
+linewidth_trial_average = 2
+color_trial_average = 'C1'
+
+ax1.set_title('Original latent dynamics')
+ax1.set_xlabel('Dim 1')
+ax1.set_ylabel('Dim 2')
+ax1.set_aspect(1)
+ax1.plot(oscillator_trajectory_2dim[0], oscillator_trajectory_2dim[1])
+
+ax2.set_title('Latent dynamics extracted by GPFA')
+ax2.set_xlabel('Dim 1')
+ax2.set_ylabel('Dim 2')
+ax2.set_aspect(1)
+# single trial trajectories
+for single_trial_trajectory in trajectories: # type: ignore
+    ax2.plot(single_trial_trajectory[0], single_trial_trajectory[1], '-', lw=linewidth_single_trial, c=color_single_trial, alpha=alpha_single_trial)
+# trial averaged trajectory
+average_trajectory = np.mean(trajectories, axis=0) # type: ignore
+ax2.plot(average_trajectory[0], average_trajectory[1], '-', lw=linewidth_trial_average, c=color_trial_average, label='Trial averaged trajectory')
+ax2.legend()
+
+plt.tight_layout()
+plt.show()
+
+# %%
+'''
+In the application above we split the trials into 2 halves and performed fitting and transforming seperately 
+on the two sets of trials. We can also simply perform fitting and transformation on the whole dataset to get the latent trajectories for all trials
+'''
+# Here we just reuse the existing instance of the GPFA() class as we use the same fitting parameters as before
+trajectories_all = gpfa_2dim.fit_transform(spiketrains_oscillator)
+
+f, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5)) # type: ignore
+
+ax1.set_title('Latent dynamics extracted by GPFA')
+ax1.set_xlabel('Dim 1')
+ax1.set_ylabel('Dim 2')
+ax1.set_aspect(1)
+for single_trial_trajectory in trajectories_all: # type: ignore
+    ax1.plot(single_trial_trajectory[0], single_trial_trajectory[1], '-', lw=linewidth_single_trial, c=color_single_trial, alpha=alpha_single_trial)
+average_trajectory = np.mean(trajectories_all, axis=0) # type: ignore
+ax1.plot(average_trajectory[0], average_trajectory[1], '-', lw=linewidth_trial_average, c=color_trial_average, label='Trial averaged trajectory')
+ax1.legend()
+
+trial_to_plot = 0
+ax2.set_title(f'Trajectory for trial {trial_to_plot}')
+ax2.set_xlabel('Time [s]')
+times_trajectory = np.arange(len(trajectories_all[trial_to_plot][0])) * bin_size.rescale('s')
+ax2.plot(times_trajectory, trajectories_all[0][0], c='C0', label="Dim 1, fitting with all trials")
+ax2.plot(times_trajectory, trajectories[0][0], c='C0', alpha=0.2, label="Dim 1, fitting with a half of trials")
+ax2.plot(times_trajectory, trajectories_all[0][1], c='C1', label="Dim 2, fitting with all trials")
+ax2.plot(times_trajectory, trajectories[0][1], c='C1', alpha=0.2, label="Dim 2, fitting with a half of trials")
+ax2.legend()
+
+plt.tight_layout()
+plt.show()
+# %%
+'''
+Here, we are moving on to generate a 50 dimensional synthetic spike train with an underlying 3 dimenisonal dynamical system of a 
+Lorenz system
+- 
+'''
+# set parameters for the integration of the Lorentz attractor
+timestep = 1 * pq.ms
+transient_duration = 10 * pq.s
+trial_duration = 30 * pq.s
+num_steps_transient = int((transient_duration.rescale('ms')/timestep).magnitude)
+num_steps = int((trial_duration.rescale('ms')/timestep).magnitude)
+
+# set parameters for spike train generation
+max_rate = 70 * pq.Hz
+np.random.seed(42)  # for visualization purposes, we want to get identical spike trains at any run
+
+# specify data
+num_trials = 20
+num_spiketrains = 50
+
+# calculate the oscillator
+times, lorentz_trajectory_3dim = integrated_lorenz(
+    timestep, num_steps=num_steps_transient+num_steps, x0=0, y0=1, z0=1.25)
+times = (times - transient_duration).rescale('s').magnitude
+times_trial = times[num_steps_transient:]
+
+# random projection
+lorentz_trajectory_Ndim = random_projection(
+    lorentz_trajectory_3dim[:, num_steps_transient:], embedding_dimension=num_spiketrains)
+
+# calculate instantaneous rate
+normed_traj = lorentz_trajectory_Ndim / lorentz_trajectory_Ndim.max()
+instantaneous_rates_lorentz = np.power(max_rate.magnitude, normed_traj)
+
+# generate spiketrains
+spiketrains_lorentz = generate_spiketrains(
+    instantaneous_rates_lorentz, num_trials, timestep)
+# %%
+f = plt.figure(figsize=(15, 10))
+ax1 = f.add_subplot(2, 2, 1)
+ax2 = f.add_subplot(2, 2, 2, projection='3d')
+ax3 = f.add_subplot(2, 2, 3)
+ax4 = f.add_subplot(2, 2, 4)
+
+ax1.set_title('Lorentz system')
+ax1.set_xlabel('Time [s]')
+labels = ['x', 'y', 'z']
+for i, x in enumerate(lorentz_trajectory_3dim):
+    ax1.plot(times, x, label=labels[i])
+ax1.axvspan(-transient_duration.rescale('s').magnitude, 0, color='gray', alpha=0.1)
+ax1.text(-5, -20, 'Initial transient', ha='center')
+ax1.legend()
+
+ax2.set_title(f'Trajectory in 3-dim space')
+ax2.set_xlabel('x')
+ax2.set_ylabel('y')
+ax2.set_ylabel('z')
+ax2.plot(lorentz_trajectory_3dim[0, :num_steps_transient],
+         lorentz_trajectory_3dim[1, :num_steps_transient],
+         lorentz_trajectory_3dim[2, :num_steps_transient], c='C0', alpha=0.3)
+ax2.plot(lorentz_trajectory_3dim[0, num_steps_transient:],
+         lorentz_trajectory_3dim[1, num_steps_transient:],
+         lorentz_trajectory_3dim[2, num_steps_transient:], c='C0')
+
+ax3.set_title(f'Projection to {num_spiketrains}-dim space')
+ax3.set_xlabel('Time [s]')
+y_offset = lorentz_trajectory_Ndim.std() * 3
+for i, y in enumerate(lorentz_trajectory_Ndim):
+    ax3.plot(times_trial, y + i*y_offset)
+
+trial_to_plot = 0
+ax4.set_title(f'Raster plot of trial {trial_to_plot}')
+ax4.set_xlabel('Time (s)')
+ax4.set_ylabel('Neuron id')
+for i, spiketrain in enumerate(spiketrains_lorentz[trial_to_plot]):
+    print(i)
+    ax4.plot(spiketrain, np.ones(len(spiketrain)) * i, ls='', marker='|')
+
+plt.tight_layout()
+plt.show()
+# %%
+# specify fitting parameters
+bin_size = 20 * pq.ms
+latent_dimensionality = 3
+
+gpfa_3dim = GPFA(bin_size=bin_size, x_dim=latent_dimensionality)
+trajectories = gpfa_3dim.fit_transform(spiketrains_lorentz)
+
+# %%
+f = plt.figure(figsize=(15, 5))
+ax1 = f.add_subplot(1, 2, 1, projection='3d')
+ax2 = f.add_subplot(1, 2, 2, projection='3d')
+
+linewidth_single_trial = 0.5
+color_single_trial = 'C0'
+alpha_single_trial = 0.5
+
+linewidth_trial_average = 2
+color_trial_average = 'C1'
+
+ax1.set_title('Original latent dynamics')
+ax1.set_xlabel('x')
+ax1.set_ylabel('y')
+ax1.set_zlabel('z')  # type: ignore
+ax1.plot(lorentz_trajectory_3dim[0, num_steps_transient:],
+         lorentz_trajectory_3dim[1, num_steps_transient:],
+         lorentz_trajectory_3dim[2, num_steps_transient:])
+
+ax2.set_title('Latent dynamics extracted by GPFA')
+ax2.set_xlabel('Dim 1')
+ax2.set_ylabel('Dim 2')
+ax2.set_zlabel('Dim 3') # type: ignore
+# single trial trajectories
+for single_trial_trajectory in trajectories: # type: ignore
+    ax2.plot(single_trial_trajectory[0], single_trial_trajectory[1], single_trial_trajectory[2],
+             lw=linewidth_single_trial, c=color_single_trial, alpha=alpha_single_trial)
+# trial averaged trajectory
+average_trajectory = np.mean(trajectories, axis=0) # type: ignore
+ax2.plot(average_trajectory[0], average_trajectory[1], average_trajectory[2], lw=linewidth_trial_average, c=color_trial_average, label='Trial averaged trajectory')
+ax2.legend()
+ax2.view_init(azim=-5, elev=60)  # type: ignore # an optimal viewing angle for the trajectory extracted from our fixed spike trains
+
+plt.tight_layout()
+plt.show()
+# %%
+f, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+
+ax1.set_title('Original latent dynamics')
+ax1.set_xlabel('Time [s]')
+labels = ['x', 'y', 'z']
+for i, x in enumerate(lorentz_trajectory_3dim[:, num_steps_transient:]):
+    ax1.plot(times_trial, x, label=labels[i])
+ax1.legend()
+
+ax2.set_title('Latent dynamics extracted by GPFA')
+ax2.set_xlabel('Time [s]')
+for i, x in enumerate(average_trajectory):
+    ax2.plot(np.arange(len(x))*0.02, x, label=f'Dim {i+1}')
+ax2.legend()
+
+plt.tight_layout()
+plt.show()
 # %%

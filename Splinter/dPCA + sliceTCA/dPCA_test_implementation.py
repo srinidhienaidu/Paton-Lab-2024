@@ -18,47 +18,54 @@ from sklearn.model_selection import train_test_split
 # %%
 ## Generating Tester Data ###############################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################
 ################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################################
+np.random.seed(42)
+
 NUM_NEURONS = 2
-NUM_TRIALS = 80
+NUM_TRIALS = 100
 NUM_COND = 8
+TIME_PTS = 100
+NUM_STIM = 4
+NUM_DEC = 2
+
 conditions = []
 stim_dep = []
 dec_dep = []
-TIME_PTS = 10 
-NUM_STIM = 4
-NUM_DEC = 2
-NUM_TIME = 5
-np.random.seed(42)
-base_rates = np.random.rand(NUM_NEURONS, NUM_COND) * 10  
+stim_dec_dep = []
 
-stimulus_dependence = np.random.randint(1, 5, size=(NUM_TRIALS))
-decision_dependence = np.random.randint(1, 3, size=(NUM_NEURONS, NUM_COND))
+base_rates = np.random.rand(NUM_NEURONS, NUM_COND) * 5 
+
+stimulus_dependence = np.random.randint(4, 8, size=(NUM_TRIALS))
+decision_dependence = np.random.randint(1, 3, size=(NUM_TRIALS))
+
+# pois_rate = 10  # Base rate for the Poisson process
+NOISE_SCALE = 0.2  # Scaling factor for multiplicative noise
+# decision_dependence = np.random.randint(1, 3, size=(NUM_NEURONS, NUM_COND))
 
 spiking_data = np.zeros((NUM_NEURONS, NUM_TRIALS, TIME_PTS))
 spiking_data_array = []
+
 for trial in range(NUM_TRIALS):
-    condition = trial % NUM_COND  
-
-    if condition % 2 == 0:
-        dec = 2
-    else:
-        dec = 1
-
-
+    condition = trial % NUM_COND 
     stim = stimulus_dependence[trial]
-    stim_dep.append(stim)
-    # conditions.append(condition)
+    dec = decision_dependence[trial]
 
+    if ((stim % 2) == 0) & ((dec % 2) == 0):
+        stim_dec_int = 10
+    else:
+        stim_dec_int = 0
+
+    stim_dep.append(stim)
     dec_dep.append(dec)
+    stim_dec_dep.append(stim_dec_int)
 
     for neuron in range(NUM_NEURONS):
-        rate = base_rates[neuron, condition] + stim * np.sin(trial / NUM_TRIALS * 2 * np.pi)
-        rate += dec * np.cos(trial / NUM_TRIALS * 2 * np.pi)
-        rate = max(rate, 0)
+        rate = base_rates[neuron, condition] + stim  + (dec * 3) + stim_dec_int
+        noisy_rate = rate * (1 + np.random.normal(0, NOISE_SCALE, TIME_PTS))
+        # print(noisy_rate)
         if np.isnan(rate):
             rate = 0
         
-        spikes = np.random.poisson(rate, TIME_PTS)
+        spikes = np.random.poisson(noisy_rate)
         spiking_data[neuron, trial, :] = spikes
 
 # %%
@@ -76,6 +83,7 @@ tone_4 = np.where(np.array(stim_dep) == 4)[0]
 #################################################################################################################################################################################
 
 bin_count = 2
+NUM_TIME = TIME_PTS // bin_count
 binned_spiking_data = np.zeros((NUM_NEURONS, NUM_TRIALS, TIME_PTS // bin_count))
 # smoothed_spiking_data = np.zeros((NUM_TRIALS, NUM_NEURONS, TIME_PTS // bin_count))
 
@@ -126,13 +134,15 @@ X_TS = np.zeros((NUM_NEURONS, (NUM_TIME * NUM_DEC * NUM_TRIALS * NUM_STIM)))
 X_TD = np.zeros((NUM_NEURONS, (NUM_TIME * NUM_DEC * NUM_TRIALS * NUM_STIM)))
 X_TSD = np.zeros((NUM_NEURONS, (NUM_TIME * NUM_DEC * NUM_TRIALS * NUM_STIM)))
 X_NOISE = np.zeros((NUM_NEURONS, (NUM_TIME * NUM_DEC * NUM_TRIALS * NUM_STIM)))
+X_TEMP = np.zeros((NUM_NEURONS, (NUM_TIME * NUM_DEC * NUM_TRIALS * NUM_STIM)))
 
 for cell in range(NUM_NEURONS):
 
     x_tsdk = binned_spiking_data[cell]
 
     x = np.mean(x_tsdk)
-    x_t = np.mean((x_tsdk - x), axis = 0) 
+    x_t = np.mean((x_tsdk - x), axis = 0)
+
     x_s = np.zeros((NUM_STIM))
     x_d = np.zeros((NUM_DEC))
 
@@ -146,10 +156,16 @@ for cell in range(NUM_NEURONS):
 
     x_sd = np.zeros((NUM_STIM, NUM_DEC))
     x_sd_pad = np.zeros((NUM_TRIALS, NUM_TIME))
+    x_tsd = np.zeros((NUM_TRIALS, NUM_TIME))
+
+    x_tsdk_k = np.zeros((NUM_TRIALS, NUM_TIME))
 
     for stim in range(NUM_STIM):
-        stim_coord = np.where(np.array(stim_dep) == (stim + 1))[0]
+        # print(stim + 4)
+        stim_coord = np.where(np.array(stim_dep) == (stim + 4))[0]
+        # print(stim_coord)
         x_s[stim] = (np.mean(x_tsdk[stim_coord] - x))
+        # print((np.mean(x_tsdk[stim_coord] - x)))
         x_s_pad[stim_coord] = np.mean(x_tsdk[stim_coord] - x)
 
     for dec in range(NUM_DEC):
@@ -160,7 +176,7 @@ for cell in range(NUM_NEURONS):
     x_arr_subtracted = x_tsdk - x - x_t - x_s_pad - x_d_pad
 
     for stim in range(NUM_STIM):
-        stim_coord = np.where(np.array(stim_dep) == (stim + 1))[0]
+        stim_coord = np.where(np.array(stim_dep) == (stim + 4))[0]
         x_ts[stim] = np.mean(x_arr_subtracted[stim_coord], axis = 0)
         x_ts_pad[stim_coord] = np.mean(x_arr_subtracted[stim_coord], axis = 0)
 
@@ -171,27 +187,38 @@ for cell in range(NUM_NEURONS):
             x_sd[stim, dec] = sd_val
             x_sd_pad[intersect_coord] = np.stack([sd_val] * NUM_TIME, axis = 0) 
 
+            x_tsdk_k[intersect_coord] = np.mean((x_tsdk[intersect_coord]), axis = 0)
+
     for dec in range(NUM_DEC):
         dec_coor = np.where(np.array(dec_dep) == (dec + 1))[0]
         x_td[dec] = np.mean(x_arr_subtracted[dec_coor], axis = 0)
         x_td_pad[dec_coor] = np.mean(x_arr_subtracted[dec_coor], axis = 0) 
 
-    x_tsd = (x_arr_subtracted - x_ts_pad - x_td_pad - x_sd_pad)
-    sigma_tsdk = x_tsdk - np.mean(x_tsdk, axis = 0)
+    for_tsd_subtracted = x_tsdk - x - x_t - x_s_pad - x_d_pad - x_ts_pad - x_td_pad - x_sd_pad
 
-    x_bar_reshaped = np.full((NUM_STIM * NUM_DEC * NUM_TRIALS * NUM_TIME), x)
-    
-    X_T[cell] = np.stack([x_t] * (NUM_TRIALS * NUM_STIM * NUM_DEC), axis = 0).flatten()
-    X_TS[cell] = np.stack([x_ts_pad.flatten()] * (NUM_STIM * NUM_DEC), axis = 0).flatten()
-    X_TD[cell] = np.stack([x_td_pad.flatten()] * (NUM_STIM * NUM_DEC), axis = 0).flatten()
-    X_TSD[cell] = np.stack([x_tsd.flatten()] * (NUM_STIM * NUM_DEC), axis = 0).flatten()
+    for stim in range(NUM_STIM):
+        stim_coord = np.where(np.array(stim_dep) == (stim + 4))[0]
+        for dec in range(NUM_DEC):
+            dec_coor = np.where(np.array(dec_dep) == (dec + 1))[0]
+            intersect_coord = np.intersect1d(stim_coord, dec_coor)
+            x_tsd[intersect_coord] = np.mean(for_tsd_subtracted[intersect_coord], axis = 0)
 
-    X_NOISE[cell] = np.stack([sigma_tsdk.flatten()] * (NUM_STIM * NUM_DEC), axis = 0).flatten()
 
-    # reconstruction = x_reshaped + x_t_reshaped + x_ts_reshaped + x_td_reshaped + x_tsd_reshaped + sigma_reshaped
-    # X[cell] = reconstruction
-    # print(reconstruction) 
+    noise_tsdk = x_tsdk - x_tsdk_k
 
+    new_ts = x_s_pad + x_ts_pad
+    new_td = x_d_pad + x_td_pad
+    new_tsd = x_sd_pad + x_tsd
+    X_TEMP[cell] = np.hstack([x] * (NUM_TIME * NUM_TRIALS * NUM_STIM * NUM_DEC))
+    X_T[cell] = np.hstack([x_t] * (NUM_TRIALS * NUM_STIM * NUM_DEC))
+
+    X_TS[cell] = np.hstack([new_ts.flatten()] * (NUM_STIM * NUM_DEC))
+    X_TD[cell] = np.hstack([new_td.flatten()] * (NUM_STIM * NUM_DEC))
+    X_TSD[cell] = np.hstack([new_tsd.flatten()] * (NUM_STIM * NUM_DEC))
+
+    X_NOISE[cell] = np.hstack([noise_tsdk.flatten()] * (NUM_STIM * NUM_DEC))
+
+X_sanity_check = X_T + X_TS + X_TD + X_TSD + X_NOISE + X_TEMP
 X = X_T + X_TS + X_TD + X_TSD + X_NOISE
 # %%
 ## Core dPCA ####################################################################################################################################################
@@ -199,8 +226,7 @@ X = X_T + X_TS + X_TD + X_TSD + X_NOISE
 
 # First testing out for X_T
 NUM_EVAL = 1
-
-A_OLS = X_NOISE @ X.T @ np.linalg.inv(X @ X.T)
+A_OLS = X_TD @ X.T @ np.linalg.inv(X @ X.T)
 A_cov = np.cov(A_OLS @ X)
 evec, eval = np.linalg.eigh(A_cov)
 
@@ -211,44 +237,67 @@ eigenVectors = evec[idx]
 U_q = eigenVectors[:, :NUM_EVAL]
 A_q = U_q @ U_q.T @ A_OLS 
 
-F = U_q
-D = U_q.T @ A_OLS
+D = U_q
+F = U_q.T @ A_OLS
 # %%
+# data = X_T.T # Should be of dimensions (# Data points x # neurons)
+
 dec_1_spikes = np.mean(binned_spiking_data[:, dec_1], axis = 1).T
-mean_1 = np.mean(dec_1_spikes, axis = 0)
+mean_1 = np.mean(binned_spiking_data[:, dec_1], axis = (1, 2))
+
 demean_1 = dec_1_spikes - mean_1
 
 dec_2_spikes = np.mean(binned_spiking_data[:, dec_2], axis = 1).T
-mean_2 = np.mean(dec_2_spikes, axis = 0)
+mean_2 = np.mean(binned_spiking_data[:, dec_2], axis = (1, 2))
+
 demean_2 = dec_2_spikes - mean_2
+overall_mean = np.mean(binned_spiking_data[:], axis = (1,2)).T
+
+dim_grid_points = np.arange(-10, 13.5, 0.5)
+dim_line = np.zeros((len(dim_grid_points), 2))
+for idx, val in enumerate(dim_grid_points):
+    dim_line[idx] = (val * D).flatten() + overall_mean 
+
+# plt.plot(dim_line[:,0], dim_line[:, 1], linestyle="-", color = 'k')
 
 
-plt.scatter(dec_1_spikes[:, 0], dec_1_spikes[:, 1], label = 'Decision 1')
-plt.scatter(dec_2_spikes[:, 0], dec_2_spikes[:, 1], label = 'Decision 2')
+plt.scatter(mean_1[0], mean_1[1], color = 'g')
+plt.scatter(mean_2[0], mean_2[1], color = 'g')
+
+plt.scatter(dec_1_spikes[:, 0], dec_1_spikes[:, 1], label = 'Decision 1', s = 3)
+plt.scatter(dec_2_spikes[:, 0], dec_2_spikes[:, 1], label = 'Decision 2', s = 3)
 plt.xlabel("FR Neuron 1")
 plt.ylabel("FR Neuron 2")
 plt.legend()
 
 projected_points_1 = np.zeros((NUM_TIME, 2))
-dim_1 = np.dot(demean_1, D.T)
+dim_1 = np.dot(demean_1, D).flatten()
 for idx, val in enumerate(dim_1):
-    projected_points_1[idx] = (((val * D) + mean_1))
+    projected_points_1[idx] = (val * D).flatten() + overall_mean
+plt.scatter(projected_points_1[:, 0], projected_points_1[:, 1], label = 'Decision 1', s = 3, color = 'b')
 
 projected_points_2 = np.zeros((NUM_TIME, 2))
-dim_2 = np.dot(demean_2, D.T)
+dim_2 = np.dot(demean_2, D).flatten()
 for idx, val in enumerate(dim_2):
-    projected_points_2[idx] = (((val * D) + mean_2))
-
-# %%
+    projected_points_2[idx] = (val * D).flatten() + overall_mean
+plt.scatter(projected_points_2[:, 0], projected_points_2[:, 1], label = 'Decision 2', s = 3, color = 'c')# %%
 # time_point = :
-plt.scatter(projected_points_1[:, 0], projected_points_1[:, 1], label = 'Decision 1')
-plt.scatter(projected_points_2[:, 0], projected_points_2[:, 1], label = 'Decision 2')
-plt.xlabel("FR Neuron 1")
-plt.ylabel("FR Neuron 2")
-plt.legend()
+# plt.scatter(demean_2[:, 0], demean_2[:, 1], label = 'Decision 2', s = 3)
+# plt.scatter(overall_mean[0], overall_mean[1], color = 'g')
+# plt.xlabel("FR Neuron 1")
+# plt.ylabel("FR Neuron 2")
+# plt.legend()
+
+# %%
+
+
+
 
 # %%
 
 # %%
+
+# %%
+
 
 # %%
